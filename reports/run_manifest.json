@@ -1,13 +1,13 @@
 {
-  "timestamp": "2026-06-07T16:37:45.864769+00:00",
+  "timestamp": "2026-06-07T17:03:25.008174+00:00",
   "seed": 42,
   "n_users": 1000,
   "n_months": 12,
   "inject_anomaly": true,
   "anomaly_month": 8,
   "model": "gpt-4o-mini",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_6c2953e649",
   "validation_passed": true,
   "users_hash": "4ddc55036e73e024",
-  "metrics_hash": "0e14be898544d1ea"
+  "metrics_hash": "deb2d0d67cec26c6"
 }

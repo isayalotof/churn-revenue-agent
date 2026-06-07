@@ -6,14 +6,16 @@ import pandas as pd
 def compute_monthly_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """Compute monthly aggregated metrics from the user-level panel.
 
-    Revenue and MRR are computed in whole cents (int) to avoid float drift.
-    ARPU is in cents (float) and rounded only on output.
+    Revenue and collected amounts are in whole cents (int).
+    MRR is contract value of active subscriptions (sum of monthly_price for is_active=True).
+    This makes MRR independent of temporary payment failures.
     """
     months = sorted(df["month"].unique())
 
     active_users = []
     paid_users = []
-    monthly_revenue = []
+    monthly_revenue = []  # collected revenue (paid only)
+    mrr = []  # contract MRR (all active, regardless of payment status)
     churned_users = []
 
     for m in months:
@@ -21,16 +23,19 @@ def compute_monthly_metrics(df: pd.DataFrame) -> pd.DataFrame:
         active = int(month_df["is_active"].sum())
         paid = int((month_df["payment_status"] == "paid").sum())
         revenue = int(month_df.loc[month_df["payment_status"] == "paid", "amount_paid"].sum())
+        contract = int(month_df.loc[month_df["is_active"], "monthly_price"].sum())
 
         active_users.append(active)
         paid_users.append(paid)
         monthly_revenue.append(revenue)
+        mrr.append(contract)
+        churned_users.append(0)
 
     for idx, _m in enumerate(months):
         if _m == 1:
-            churned_users.append(0)
+            churned_users[idx] = 0
         else:
-            churned_users.append(active_users[idx - 1] - active_users[idx])
+            churned_users[idx] = active_users[idx - 1] - active_users[idx]
 
     churn_rates = []
     for idx, _m in enumerate(months):
@@ -46,7 +51,6 @@ def compute_monthly_metrics(df: pd.DataFrame) -> pd.DataFrame:
         arpus.append(monthly_revenue[idx] / active if active > 0 else 0.0)
 
     # Fintech metrics
-    mrr = monthly_revenue  # For monthly subscription, MRR = monthly revenue
     cohort_retention = [active_users[idx] / active_users[0] for idx in range(len(months))]
     logo_churn_rate = churn_rates
     revenue_churn = []
@@ -54,11 +58,9 @@ def compute_monthly_metrics(df: pd.DataFrame) -> pd.DataFrame:
         if _m == 1:
             revenue_churn.append(0.0)
         else:
-            prev_rev = monthly_revenue[idx - 1]
-            revenue_churn.append(
-                (prev_rev - monthly_revenue[idx]) / prev_rev if prev_rev > 0 else 0.0
-            )
-    nrr = [monthly_revenue[idx] / monthly_revenue[0] for idx in range(len(months))]
+            prev_mrr = mrr[idx - 1]
+            revenue_churn.append((prev_mrr - mrr[idx]) / prev_mrr if prev_mrr > 0 else 0.0)
+    nrr = [mrr[idx] / mrr[0] for idx in range(len(months))]
 
     metrics = pd.DataFrame(
         {

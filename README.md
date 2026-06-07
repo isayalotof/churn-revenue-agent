@@ -1,84 +1,87 @@
 # Churn & Revenue Agent
 
-Deterministic CLI agent that generates synthetic subscription data, computes churn and revenue metrics, validates data quality, and produces a business narrative report. The core pipeline runs without an API key; LLM mode adds a polished narrative but does not change the numbers.
+CLI-агент, который генерирует синтетические subscription-данные, считает метрики, валидирует их и выдаёт отчёт. Вся математика — в Python. LLM только читает цифры и пишет прозу.
 
-## Why this design
+## Зачем такое устройство
 
-- **Numbers come from code, not LLM.** All calculations — cohort simulation, revenue aggregation, validation — run in deterministic Python with fixed seeds. The LLM only reads metrics and writes prose.
-- **Money is tracked in cents.** `monthly_price`, `amount_paid`, and `monthly_revenue` are stored and summed as integers (cents). Dollar formatting happens only at the output boundary. This eliminates float drift and makes revenue reconciliation exact.
-- **Fail-closed on bad data.** If hard validation invariants fail, the pipeline exits with a non-zero code and emits a warning report, not a normal narrative. In fintech, a report on broken data is worse than no report.
-- **Reproducible by seed.** The same seed produces identical `users.csv` and `metrics.csv` every time. The `--no-llm` mode guarantees this even without an API key.
+- **Цифры считает код, не модель.** Генерация когорты, агрегация, валидация — детерминированный Python с фиксированным seed. LLM получает готовую таблицу и пишет narrative.
+- **Деньги в центах.** `monthly_price`, `amount_paid`, `monthly_revenue` — целые числа (cents). Доллары появляются только на границе вывода (CSV/отчёт), делением на 100. Float-дрейф исключён, реконсиляция выручки — точная, без epsilon.
+- **MRR — contract value активных подписок, не collected revenue.** Когда платёж фейлится, подписка остаётся активной, и MRR не падает. Collected revenue падает. Это различие критично для финтеха: сбой биллинга ≠ contraction.
+- **Fail-closed.** Если hard-инварианты падают, пайплайн завершается с ненулевым кодом и выдаёт warning-отчёт. Нормальный narrative на битых данных не строится.
+- **Воспроизводимость.** Один и тот же seed дают идентичные `users.csv` и `metrics.csv`. Режим `--no-llm` работает без ключа и гарантирует битовую идентичность.
 
 ## Assumptions
 
-- **Closed cohort.** 1000 users join in month 1. No new acquisitions in months 2-12.
-- **No reactivation.** Users who churn never return. This makes `active_users` monotonically non-increasing.
-- **Full grid.** Every user has a row for every month (12 000 rows total). After churn, `payment_status` is `"churned"` and `amount_paid` is 0.
-- **Active vs paid are distinct.** A user with a failed payment is still active (grace period) but does not generate revenue. `paid_users` is a subset of `active_users`.
-- **Failed payments and churn are separate events.** Base churn follows a monthly hazard curve. On top of that, 40% of users with a failed payment in month m churn in month m+1 (involuntary churn).
-- **ARPU on active base.** `ARPU = monthly_revenue / active_users`, including grace-period users. This reflects real pressure during payment outages.
-- **Monetary fields in cents.** `monthly_price`, `amount_paid`, and `monthly_revenue` are integers representing whole cents. Dollars appear only in CSV display and reports.
-- **Report language.** English by default.
-- **Artifacts.** `data/users.csv` and `reports/*` are generated artifacts. They are committed for visibility, but the code guarantees identical regeneration from the same seed.
+- **Closed cohort.** 1000 юзеров пришли в месяц 1. Новых привлечений в месяцы 2-12 нет.
+- **Без реактивации.** Ушедший в churn не возвращается. `active_users` монотонно не растёт.
+- **Полный grid.** 1000 юзеров × 12 месяцев = 12000 строк. После churn `payment_status = "churned"`, `amount_paid = 0`.
+- **Active ≠ paid.** Юзер с failed-платежом остаётся active (grace period), но не генерирует revenue. `paid_users ⊂ active_users`.
+- **Failed → churn отдельно.** Failed-платёж ≠ churn. Базовый отток — через monthly hazard. Сверху — involuntary churn: 40% юзеров с failed в месяце m уходят в m+1.
+- **ARPU на active base.** `ARPU = collected_revenue / active_users`, включая grace-период. Это занижает ARPU в месяцы сбоев — и это корректно.
+- **Монетарные поля в центах.** Внутри пайплайна всё — int cents. Доллары только при выводе.
+- **Язык отчёта.** English по умолчанию (Executive summary, ARPU, churn — родные термины).
+- **Артефакты.** `data/users.csv` и `reports/*` — сгенерированные файлы. Закоммичены для видимости, но код гарантирует идентичную регенерацию из того же seed.
 
-## Installation
+## Установка
 
-Requires Python 3.11+ and `uv`.
+Python 3.11+ и `uv`.
 
 ```bash
 uv sync --extra dev
 ```
 
-Or use Make:
+Или через Make:
 
 ```bash
 make install
 ```
 
-## Running
+## Запуск
 
-With LLM narrative (requires `OPENAI_API_KEY`):
+С LLM (нужен `OPENAI_API_KEY`):
 
 ```bash
 make report
-# or explicitly
+# или явно
 uv run python -m churn_agent run
 ```
 
-Without LLM — deterministic template mode, no key needed:
+Без LLM — deterministic template, ключ не нужен:
 
 ```bash
 uv run python -m churn_agent run --no-llm
 ```
 
-Generate data only:
+Только генерация данных:
 
 ```bash
 uv run python -m churn_agent generate
 ```
 
-Run the full pipeline with custom parameters:
+Кастомные параметры:
 
 ```bash
 uv run python -m churn_agent run --seed 123 --n-users 500 --months 6 --no-anomaly --no-llm
 ```
 
-## Reproducibility
+## Воспроизводимость
 
-The generator uses `numpy.random.default_rng(seed)`. The same seed produces bit-identical `users.csv` and `metrics.csv`. Default seed is 42. The `--seed` flag controls this explicitly.
+Генератор использует `numpy.random.default_rng(seed)`. Один seed → идентичные `users.csv` и `metrics.csv`. Дефолт — 42. Флаг `--seed` задаёт его явно.
 
-LLM output is best-effort reproducible (`temperature=0`, `seed` passed to OpenAI), but OpenAI does not guarantee bitwise identical text. Hard reproducibility is provided by the deterministic core and `--no-llm` mode.
+LLM-output — best-effort reproducible (`temperature=0`, seed передаётся в OpenAI), но OpenAI не гарантирует битовую идентичность текста. Жёсткую воспроизводимость обеспечивает детерминированное ядро и `--no-llm`.
 
-## Environment
+## Окружение
 
-Copy `.env.example` to `.env` and fill in your key:
+Скопируй `.env.example` в `.env` и вставь ключ:
 
 ```bash
 OPENAI_API_KEY=sk-proj-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-## Project structure
+`python-dotenv` подхватывает `.env` автоматически при запуске.
+
+## Структура
 
 ```
 churn-revenue-agent/
@@ -108,34 +111,35 @@ churn-revenue-agent/
 │   ├── test_metrics.py
 │   └── test_validation.py
 ├── data/
-│   └── users.csv
+│   ├── users.csv
+│   └── .generation_meta.json
 └── reports/
     ├── metrics.csv
     ├── report.md
     └── run_manifest.json
 ```
 
-## Tests
+## Тесты
 
 ```bash
 make test
 ```
 
-All tests run without an API key.
+20 тестов, API-ключ не нужен.
 
-## Lint
+## Линт
 
 ```bash
 make lint
 ```
 
-## Architecture
+## Архитектура
 
-See [AGENTIC_APPROACH.md](AGENTIC_APPROACH.md) for a detailed explanation of the agentic workflow, tools, prompts, guardrails, and the rationale behind the design.
+Подробности — в [AGENTIC_APPROACH.md](AGENTIC_APPROACH.md). Там же: trade-offs, почему не мульти-агентность, и честное описание границ скоупа.
 
-## Security and PII hygiene
+## Безопасность и PII
 
-- Secrets are read only from environment variables. They never appear in code or logs.
-- `.env` is in `.gitignore`; only `.env.example` is committed.
-- The LLM receives only the aggregated metrics table, not row-level user data. On real data, always aggregate or anonymize before sending to any external API.
-- `user_id` is a synthetic integer surrogate with no link to real PII.
+- Секреты только из env. Не в коде, не в логах.
+- `.env` в `.gitignore`, в репо — только `.env.example`.
+- LLM получает агрегированную таблицу метрик, не row-level данные. На реальных данных — агрегируй или анонимизируй перед отправкой во внешний API.
+- `user_id` — синтетический surrogate, без связи с реальными PII.

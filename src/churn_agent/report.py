@@ -33,40 +33,38 @@ def render_report_md(report_json: dict, metrics_table: str) -> str:
             lines.append(text)
             lines.append("")
 
-    # Inject metrics table into Monthly revenue trend if present
-    if "monthly_revenue_trend" in report_json:
-        md = "\n".join(lines)
-        if "| month |" not in md:
-            # Insert table after the Monthly revenue trend section
-            for i, line in enumerate(lines):
-                if line == "## Monthly revenue trend":
-                    # Find the next blank line after the section text
-                    j = i + 1
-                    while j < len(lines) and lines[j].strip() != "":
-                        j += 1
-                    lines.insert(j + 1, metrics_table)
-                    lines.insert(j + 2, "")
-                    break
+    # Inject metrics table into Monthly revenue trend if not already present
+    md_text = "\n".join(lines)
+    if "| month |" not in md_text:
+        for i, line in enumerate(lines):
+            if line == "## Monthly revenue trend":
+                # Find the next section header or end of text to insert before
+                insert_pos = len(lines)
+                for j in range(i + 1, len(lines)):
+                    if lines[j].startswith("## "):
+                        insert_pos = j
+                        break
+                lines.insert(insert_pos, "")
+                lines.insert(insert_pos + 1, metrics_table)
+                lines.insert(insert_pos + 2, "")
+                break
 
     return "\n".join(lines)
 
 
-def build_no_llm_report(metrics_table: str, result: ValidationResult) -> dict:
+def build_no_llm_report(metrics_df: pd.DataFrame, result: ValidationResult) -> dict:
     """Build a structured JSON report deterministically (no LLM)."""
-    metrics = pd.read_csv("reports/metrics.csv")
-    # Read back as cents for exact computation
-    for col in ["monthly_revenue", "arpu", "mrr"]:
-        if col in metrics.columns:
-            metrics[col] = (metrics[col] * 100).round().astype(int)
+    metrics = metrics_df.copy()
 
     total_revenue = int(metrics["monthly_revenue"].sum())
     start_revenue = int(metrics["monthly_revenue"].iloc[0])
-    end_revenue = int(metrics["monthly_revenue"].iloc[-1])
+    total_mrr = int(metrics["mrr"].sum())
+    start_mrr = int(metrics["mrr"].iloc[0])
+    end_mrr = int(metrics["mrr"].iloc[-1])
 
     revenue_diffs = metrics["monthly_revenue"].diff()
     sharpest_drop_idx = revenue_diffs.idxmin()
     sharpest_drop_month = int(metrics.loc[sharpest_drop_idx, "month"])
-    sharpest_drop_revenue = int(metrics.loc[sharpest_drop_idx, "monthly_revenue"])
     sharpest_drop_amount = int(-revenue_diffs.min())
 
     max_churn_idx = metrics["churn_rate"].idxmax()
@@ -97,69 +95,65 @@ def build_no_llm_report(metrics_table: str, result: ValidationResult) -> dict:
     report = {
         "data_quality_warning": not result.passed,
         "executive_summary": (
-            f"The cohort of 1000 users generated {fmt_dollars(total_revenue)} in total revenue over 12 months. "
-            f"Revenue declined from {fmt_dollars(start_revenue)} in month 1 to {fmt_dollars(end_revenue)} in month 12. "
-            f"The sharpest revenue drop occurred in month {sharpest_drop_month} ({fmt_dollars(sharpest_drop_revenue)}), "
-            f"driven by a payment failure anomaly that spilled into elevated churn in month {max_churn_month}. "
-            f"Early churn (months 2-3) consumed the largest share of the cohort. "
-            f"Cohort retention at month 12 is {retention_month_12:.4f} and NRR is {nrr_month_12:.4f}."
+            f"Когорта из 1000 юзеров принесла {fmt_dollars(total_revenue)} collected revenue за 12 месяцев. "
+            f"Contract MRR просела с {fmt_dollars(start_mrr)} до {fmt_dollars(end_mrr)}. "
+            f"Самый резкий провал collected revenue — месяц {sharpest_drop_month} ({fmt_dollars(month_8_revenue)}). "
+            f"Причина: сбой платежей. Это не contraction MRR — подписки остались активными, просто не списались. "
+            f"Retention когорты на месяц 12: {retention_month_12:.4f}, NRR: {nrr_month_12:.4f}."
         ),
         "monthly_revenue_trend": (
-            f"Revenue started at {fmt_dollars(start_revenue)} in month 1 and trended downward as the cohort shrank. "
-            f"The sharpest single-month drop was from month {sharpest_drop_month - 1} to month {sharpest_drop_month}, "
-            f"losing {fmt_dollars(sharpest_drop_amount)}. After the anomaly, revenue partially recovered but never returned to pre-anomaly levels."
+            f"Collected revenue стартовала с {fmt_dollars(start_revenue)} и шла вниз вместе с сокращением базы. "
+            f"Резкий drop с месяца {sharpest_drop_month - 1} на {sharpest_drop_month}: минус {fmt_dollars(sharpest_drop_amount)}. "
+            f"После аномалии частичное восстановление, но до докризисного уровня не вернулись."
         ),
         "churn_trend": (
-            f"Month 1 churn rate is N/A because there is no preceding month. "
-            f"The highest churn rate was in month {max_churn_month} ({max_churn_rate:.4f}), "
-            f"while the lowest rate after month 1 was in month {min_churn_month} ({min_churn_rate:.4f}). "
-            f"Months 2 and 3 show elevated rates consistent with an onboarding cliff."
+            f"Month 1 churn rate — N/A, предыдущего месяца нет. "
+            f"Пик churn rate — месяц {max_churn_month} ({max_churn_rate:.4f}). "
+            f"Минимум после месяца 1 — месяц {min_churn_month} ({min_churn_rate:.4f}). "
+            f"Месяцы 2-3 показывают onboarding cliff — классическая картина для subscription."
         ),
         "arpu_trend": (
-            f"ARPU began at {fmt_dollars(start_arpu)} and dipped to {fmt_dollars(min_arpu)} in month {min_arpu_month}, "
-            f"the same month as the payment failure spike. "
-            f"ARPU is calculated on the full active base, including grace-period users, "
-            f"so a surge in failed payments directly depresses the metric even when the active count is stable."
+            f"ARPU (collected / active base) стартовал с {fmt_dollars(start_arpu)} и упал до {fmt_dollars(min_arpu)} в месяц {min_arpu_month}. "
+            f"ARPU считается на всю активную базу, включая grace-период. "
+            f"Поэтому всплеск failed-платежей мгновенно давит ARPU, хотя active users выглядят стабильно."
         ),
         "data_quality_checks": (
-            "Hard invariants checked:\n"
+            "Hard invariants:\n"
             + "\n".join(
                 f"- {'PASS' if c.passed else 'FAIL'}: {c.name} — {c.detail}"
                 for c in result.invariants
             )
             + "\n\n"
             + (
-                "Soft anomalies detected:\n"
+                "Soft anomalies:\n"
                 + "\n".join(
                     f"- {a.severity.upper()}: {a.name} (month {a.month}) — {a.detail}"
                     for a in result.anomalies
                 )
                 if result.anomalies
-                else "No soft anomalies detected."
+                else "No soft anomalies."
             )
         ),
         "business_interpretation": (
-            f"Revenue declined steadily because the closed cohort shrinks each month through churn. "
-            f"The payment anomaly in month 8 cost approximately {fmt_dollars(month_7_revenue - month_8_revenue)} in immediate MRR "
-            f"and triggered {month_9_churned} churned users in month 9 versus {month_8_churned} in month 8. "
-            f"This confirms that failed payments are not just a revenue timing issue—they directly accelerate attrition.\n\n"
-            f"Key takeaways:\n"
-            f"1. Early churn (months 2-3) removes a large fraction of the cohort. Target onboarding improvements in the first 60 days. "
-            f"Month 2 churn alone was {metrics.loc[metrics['month'] == 2, 'churn_rate'].iloc[0]:.4f}, "
-            f"month 3 was {metrics.loc[metrics['month'] == 3, 'churn_rate'].iloc[0]:.4f}.\n"
-            f"2. The month 8 payment failure spike cost {fmt_dollars(month_7_revenue - month_8_revenue)} in MRR and pushed {month_9_churned} users into churn in month 9. "
-            f"Implement retry and dunning flows to catch failed payments before they convert to involuntary churn.\n"
-            f"3. ARPU compression in month {min_arpu_month} shows that failed payments hurt the metric even when user counts look stable. "
-            f"Monitor failed-payment share as a leading indicator of both revenue and churn risk.\n"
-            f"4. Logo churn and revenue churn coincide in this model because the hazard rate does not depend on plan. "
-            f"On real data, if expensive plans churn faster, revenue churn would exceed logo churn—worth segmenting by plan."
+            f"Collected revenue падает по двум каналам: отток базы и failed-платежи. "
+            f"В месяце 8 сбой биллинга стоил {fmt_dollars(month_7_revenue - month_8_revenue)} collected revenue, "
+            f"а в месяце 9 churn вырос до {month_9_churned} юзеров против {month_8_churned} в месяце 8. "
+            f"Это прямая causal chain: failed payment → involuntary churn в следующем месяце.\n\n"
+            f"Takeaways:\n"
+            f"1. Ранний churn (месяцы 2-3) съедает ~{metrics.loc[metrics['month'] == 2, 'churn_rate'].iloc[0]:.1%} когорты каждый месяц. "
+            f"Цель — onboarding в первые 60 дней, не общие «улучшения retention».\n"
+            f"2. Сбой платежей в месяце 8 стоил {fmt_dollars(month_7_revenue - month_8_revenue)} collected revenue и спровоцировал всплеск churn в месяце 9. "
+            f"Нужен retry/dunning-флоу, который ловит failed ещё до конверсии в churn.\n"
+            f"3. Logo churn rate и revenue churn практически совпадают (разница в пределах сэмплинга), "
+            f"потому что hazard не зависит от плана. На реальных данных, если дорогие планы уходят быстрее, "
+            f"revenue churn уйдёт вперёд — и это станет видно по сегментации."
         ),
         "cited_numbers": [
             total_revenue / 100,
-            start_revenue / 100,
-            end_revenue / 100,
+            total_mrr / 100,
+            start_mrr / 100,
+            end_mrr / 100,
             sharpest_drop_month,
-            sharpest_drop_revenue / 100,
             sharpest_drop_amount / 100,
             max_churn_month,
             max_churn_rate,

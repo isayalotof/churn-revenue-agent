@@ -15,6 +15,7 @@ from churn_agent.config import (
     DEFAULT_N_MONTHS,
     DEFAULT_N_USERS,
     DEFAULT_SEED,
+    GEN_META_JSON,
     MANIFEST_JSON,
     METRICS_CSV,
     OPENAI_MODEL,
@@ -69,6 +70,16 @@ def generate_data(
         inject_anomaly,
         active_total,
     )
+    # Save generation params for downstream auditability
+    meta = {
+        "seed": seed,
+        "n_users": n_users,
+        "n_months": n_months,
+        "inject_anomaly": inject_anomaly,
+        "anomaly_month": anomaly_month,
+    }
+    with open(GEN_META_JSON, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
     return df
 
 
@@ -126,21 +137,22 @@ def run_validation(
 
 
 def lookup_metric(month: int, name: str) -> float:
-    """Return a single metric value by month and column name."""
+    """Return a single metric value by month and column name (in display units)."""
     global _metrics_cache
     if _metrics_cache is None:
         if not os.path.exists(METRICS_CSV):
             raise FileNotFoundError(f"Metrics file not found: {METRICS_CSV}")
         _metrics_cache = pd.read_csv(METRICS_CSV)
-        for col in ["monthly_revenue", "arpu", "mrr"]:
-            if col in _metrics_cache.columns:
-                _metrics_cache[col] = (_metrics_cache[col] * 100).round().astype(int)
     row = _metrics_cache[_metrics_cache["month"] == month]
     if row.empty:
         raise ValueError(f"Month {month} not found in metrics")
     if name not in row.columns:
         raise ValueError(f"Metric '{name}' not found. Available: {list(row.columns)}")
-    return float(row[name].iloc[0])
+    val = float(row[name].iloc[0])
+    # Return display units (dollars for monetary columns)
+    if name in ("monthly_revenue", "arpu", "mrr"):
+        return round(val, 2)
+    return val
 
 
 def write_manifest(

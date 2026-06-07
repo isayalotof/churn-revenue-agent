@@ -67,8 +67,12 @@ def test_fintech_metrics_present(sample_metrics):
         assert col in sample_metrics.columns
 
 
-def test_mrr_equals_monthly_revenue(sample_metrics):
-    assert (sample_metrics["mrr"] == sample_metrics["monthly_revenue"]).all()
+def test_mrr_is_contract_value_of_active_users(sample_data, sample_metrics):
+    for m in range(1, DEFAULT_N_MONTHS + 1):
+        month_df = sample_data[(sample_data["month"] == m) & (sample_data["is_active"])]
+        expected = month_df["monthly_price"].sum()
+        actual = sample_metrics.loc[sample_metrics["month"] == m, "mrr"].iloc[0]
+        assert expected == actual
 
 
 def test_cohort_retention_bounds(sample_metrics):
@@ -82,8 +86,12 @@ def test_nrr_bounds(sample_metrics):
     assert sample_metrics.loc[sample_metrics["month"] == 1, "nrr"].iloc[0] == 1.0
 
 
-def test_revenue_churn_bounds(sample_metrics):
-    # Revenue churn can be negative when MRR grows MoM (e.g. recovery after anomaly)
-    assert (sample_metrics["revenue_churn"] >= -1).all()
-    assert (sample_metrics["revenue_churn"] <= 1).all()
-    assert sample_metrics.loc[sample_metrics["month"] == 1, "revenue_churn"].iloc[0] == 0.0
+def test_revenue_churn_matches_logo_churn_within_sampling_error(sample_metrics):
+    # MRR is contract value of active base; churn hazard is uniform across plans,
+    # so revenue_churn and logo_churn_rate coincide in expectation.
+    # With 1000 users, sampling error is ~O(1/sqrt(n)) ≈ 0.003.
+    for _, row in sample_metrics.iterrows():
+        if row["month"] == 1:
+            assert row["revenue_churn"] == 0.0
+        else:
+            assert abs(row["revenue_churn"] - row["logo_churn_rate"]) < 0.01

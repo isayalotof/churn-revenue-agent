@@ -48,7 +48,7 @@ def _run_tool_loop(
     model_name: str,
     messages: list[dict],
 ) -> list[dict]:
-    """Optional tool-gathering phase. Returns updated messages."""
+    """Optional fact gathering via tools. Returns updated messages."""
     for _ in range(MAX_ITERATIONS):
         response = client.chat.completions.create(
             model=model_name,
@@ -119,10 +119,8 @@ def run_agent(
         {"role": "user", "content": task_prompt},
     ]
 
-    # Phase 1: optional fact gathering via tools
     messages = _run_tool_loop(client, model_name, messages)
 
-    # Phase 2: structured JSON output
     messages.append(
         {
             "role": "user",
@@ -146,51 +144,42 @@ def run_agent(
     return data, fingerprint
 
 
-def extract_numbers(text: str) -> list[tuple[int | None, float]]:
-    """Extract numeric values from report text for guardrail checking."""
+def _extract_text_numbers(text: str) -> list[float]:
+    """Extract all numeric values from text."""
     numbers = []
-    lines = text.splitlines()
-    current_month: int | None = None
-
-    for line in lines:
-        month_match = re.search(r"\bmonth\s+(\d{1,2})\b|\bm(\d{1,2})\b", line, re.IGNORECASE)
-        if month_match:
-            current_month = int(month_match.group(1) or month_match.group(2))
-
-        for match in re.finditer(r"\$?([0-9,]+(?:\.[0-9]+)?)", line):
-            num_str = match.group(1).replace(",", "")
-            if not num_str:
-                continue
-            num = float(num_str)
-            numbers.append((current_month, num))
-
+    for match in re.finditer(r"\$?([0-9,]+(?:\.[0-9]+)?)", text):
+        num_str = match.group(1).replace(",", "")
+        if not num_str:
+            continue
+        numbers.append(float(num_str))
     return numbers
 
 
-def verify_cited_numbers(
-    cited_numbers: list[float],
-    metrics_path: str = "reports/metrics.csv",
-    raw_path: str = "data/users.csv",
-) -> list[str]:
-    """Verify every cited number exists in metrics or raw data."""
-    metrics = pd.read_csv(metrics_path)
-    raw = pd.read_csv(raw_path)
-    issues = []
-
+def _build_metric_set(metrics: pd.DataFrame, raw: pd.DataFrame) -> set[float]:
+    """Build a set of all derivable numeric values from metrics and raw data."""
     metric_values: set[float] = set()
+
+    # Raw metric columns
     for _, row in metrics.iterrows():
         metric_values.add(round(float(row["monthly_revenue"]), 2))
         metric_values.add(round(float(row["churn_rate"]), 4))
         metric_values.add(round(float(row["arpu"]), 2))
-        metric_values.add(round(float(row.get("mrr", row["monthly_revenue"])), 2))
+        metric_values.add(round(float(row["mrr"]), 2))
         metric_values.add(round(float(row.get("cohort_retention", 0)), 4))
+        metric_values.add(round(float(row.get("logo_churn_rate", 0)), 4))
         metric_values.add(round(float(row.get("revenue_churn", 0)), 4))
         metric_values.add(round(float(row.get("nrr", 0)), 4))
         metric_values.add(float(row["active_users"]))
         metric_values.add(float(row["paid_users"]))
         metric_values.add(float(row["churned_users"]))
 
+    # MoM revenue and MRR deltas as dollars
     for idx in range(1, len(metrics)):
+        for col in ["monthly_revenue", "mrr"]:
+            prev = metrics[col].iloc[idx - 1] / 100.0
+            curr = metrics[col].iloc[idx] / 100.0
+            metric_values.add(round(prev - curr, 2))
+            metric_values.add(round(abs(prev - curr), 2))
         prev_rev = metrics["monthly_revenue"].iloc[idx - 1]
         curr_rev = metrics["monthly_revenue"].iloc[idx]
         if prev_rev > 0:
@@ -198,6 +187,7 @@ def verify_cited_numbers(
             metric_values.add(drop_pct)
             metric_values.add(round(drop_pct, 2))
 
+    # Failed-payment shares
     active = raw[raw["is_active"]]
     monthly_failed = (
         active.groupby("month")
@@ -212,13 +202,51 @@ def verify_cited_numbers(
         metric_values.add(round(float(row["failed_share"]), 1))
         metric_values.add(round(float(row["failed_share"]), 2))
 
-    def is_close(val: float, target: float, tol: float = 0.05) -> bool:
+    return metric_values
+
+
+def verify_report_numbers(
+    report_json: dict,
+    metrics_path: str = "reports/metrics.csv",
+    raw_path: str = "data/users.csv",
+) -> list[str]:
+    """Compare all numbers in the report against metrics and raw data."""
+    metrics = pd.read_csv(metrics_path)
+    raw = pd.read_csv(raw_path)
+    issues = []
+
+    metric_values = _build_metric_set(metrics, raw)
+
+    def is_close(val: float, target: float, tol: float = 0.01) -> bool:
         return abs(val - target) <= tol
 
-    for num in cited_numbers:
+    # Verify cited_numbers first
+    for num in report_json.get("cited_numbers", []):
         candidates = [num, num / 100, num * 100]
         found = any(is_close(c, mv) for c in candidates for mv in metric_values)
         if not found:
-            issues.append(f"Cited number {num} not found in metrics or raw data")
+            issues.append(f"Cited number {num} not found in metrics")
+
+    # Then verify every number actually present in the rendered text
+    all_text = "\n".join(
+        str(report_json.get(k, ""))
+        for k in [
+            "executive_summary",
+            "monthly_revenue_trend",
+            "churn_trend",
+            "arpu_trend",
+            "data_quality_checks",
+            "business_interpretation",
+        ]
+    )
+    text_numbers = _extract_text_numbers(all_text)
+    for num in text_numbers:
+        # Skip small integers that are month numbers or list indices
+        if num <= 12 and num == int(num):
+            continue
+        candidates = [num, num / 100, num * 100]
+        found = any(is_close(c, mv) for c in candidates for mv in metric_values)
+        if not found:
+            issues.append(f"Text number {num} not found in metrics")
 
     return issues

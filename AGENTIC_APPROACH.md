@@ -1,42 +1,42 @@
 # Agentic Approach
 
-## 1. Role of the agent
+## 1. Роль агента
 
-The agent is a reporting orchestrator, not a calculation engine. Its job is to:
+Агент — оркестратор отчётности, не вычислительный движок. Его работа:
 
-1. Run a deterministic data-to-metrics pipeline.
-2. Gate the output through hard validation invariants.
-3. If data passes, call an LLM to turn the metric table into a tight business narrative.
-4. If data fails, issue a data-quality warning and refuse to present the metrics as trustworthy.
+1. Прогнать детерминированный пайплайн: данные → метрики → валидация.
+2. Пропустить результат через валидационный гейт.
+3. Если данные чистые — вызвать LLM, чтобы таблица метрик превратилась в бизнес-нарратив.
+4. Если данные битые — выдать warning и не выдавать метрики как достоверные.
 
-All numbers — synthetic data, aggregated metrics, validation checks — come from deterministic Python code. The LLM only reads numbers and writes prose.
+Все цифры — из Python-кода. LLM только читает их и пишет прозу.
 
-## 2. Agent structure
+## 2. Устройство агента
 
-The agent has four tools defined in `tools.py`:
+Четыре tool'а в `tools.py`:
 
-- `generate_data(...)` — creates the synthetic panel and writes `data/users.csv`.
-- `compute_metrics(...)` — reads the panel, writes `reports/metrics.csv`, and returns a markdown table.
-- `run_validation(...)` — returns hard invariant results and soft anomalies.
-- `lookup_metric(month, name)` — returns a single scalar from `reports/metrics.csv`.
+- `generate_data(...)` — синтетическая панель, пишет `data/users.csv`.
+- `compute_metrics(...)` — агрегация, пишет `reports/metrics.csv`, возвращает markdown-таблицу.
+- `run_validation(...)` — hard invariants + soft anomalies.
+- `lookup_metric(month, name)` — точечный доступ к значению метрики.
 
-The flow in `agent.py` / `cli.py` is:
+Поток в `agent.py` / `cli.py`:
 
-1. CLI calls `generate_data`, `compute_metrics`, and `run_validation` in sequence. This is pure code, reproducible, and requires no API key.
-2. If `validation.passed == False`, the report opens with a data-quality warning. CLI exits with code 2.
-3. If `validation.passed == True` and `--no-llm` is off, the OpenAI model receives the metrics table, invariant list, and anomaly list. It may call `lookup_metric` up to 8 times (tool loop limit) to pull exact values for specific months.
-4. After the tool loop, a final structured-output call returns a JSON object with six text sections and a `cited_numbers` array. This JSON is rendered to markdown by `report.py`.
-5. A guardrail verifies every number in `cited_numbers` against `reports/metrics.csv` and raw data. Mismatches block the report (exit code 3).
-6. If `--no-llm` is on, `report.py` builds the same JSON structure deterministically, then renders it to markdown.
-7. On every run, `run_manifest.json` records seed, model, hashes, and `system_fingerprint`.
+1. CLI вызывает `generate_data`, `compute_metrics`, `run_validation` последовательно. Чистый код, без ключа, воспроизводимо.
+2. Если `validation.passed == False` — отчёт начинается с warning, CLI завершается с кодом 2.
+3. Если `passed == True` и нет `--no-llm`, модель OpenAI получает таблицу метрик, инварианты, аномалии. Может вызвать `lookup_metric` до 8 раз (лимит tool-loop).
+4. После tool-loop — финальный structured-output call с JSON schema. Модель возвращает объект с 6 секциями и массивом `cited_numbers`.
+5. Guardrail: `verify_report_numbers` извлекает все числа из текста отчёта и сверяет с `metrics.csv` + raw data. Несовпадение → exit code 3, отчёт не выпускается.
+6. `--no-llm` — `report.py` строит тот же JSON детерминированно, затем рендерит в markdown.
+7. На каждый прогон пишется `run_manifest.json` с seed, моделью, хэшами, `system_fingerprint`.
 
-## 3. Where ordinary calculations live (and why)
+## 3. Где обычные расчёты и почему именно код
 
-- **Data generation (`data_generation.py`)** — Cohort simulation with hazard rates, payment failures, and anomaly injection. Code is the only way to guarantee a fixed seed produces identical output.
-- **Metrics (`metrics.py`)** — Group-by aggregations on the panel. Computing churn rate, ARPU, MRR, cohort retention, NRR, and revenue churn from the raw table keeps the metrics independent of the generation model. This makes the tests meaningful: they check that metrics match the data, not that the data matches an internal state.
-- **Validation (`validation.py`)** — Hard invariants (schema, row count, revenue reconciliation, monotonicity, churn closure) and soft anomaly detection (MoM revenue drops, churn spikes, failed-payment spikes). These are pure logic; an LLM would be slower, more expensive, and prone to missing edge cases.
+- **Генерация (`data_generation.py`)** — симуляция когорты с hazard-кривыми и инъекцией аномалии. Только код гарантирует, что один seed даёт побитово идентичный DataFrame.
+- **Метрики (`metrics.py`)** — groupby-агрегации на панели. Churn rate, ARPU, MRR, cohort retention, NRR, revenue churn считаются из raw data, не из внутреннего состояния генератора. Это делает тесты осмысленными: они проверяют, что метрики совпадают с данными, а не что данные совпадают с моделью.
+- **Валидация (`validation.py`)** — hard invariants (схема, row count, реконсиляция выручки, монотонность, замыкание оттока) и soft anomalies (MoM-drop выручки, spike churn, spike failed-платежей). Чистая логика; LLM был бы медленнее, дороже и менее надёжен на edge cases.
 
-Pydantic schemas in `schemas.py` add type safety at the row level, but the bulk validation is plain pandas for speed on 12 000 rows.
+Pydantic-схемы в `schemas.py` — контракт строки, но основная валидация идёт через pandas на 12000 строках.
 
 ## 4. Prompts
 
@@ -61,7 +61,7 @@ Output structure (exact headers):
 6. Business interpretation
 ```
 
-### Task prompt template
+### Task prompt
 
 ```
 Generate the churn and revenue report based on the following data.
@@ -87,65 +87,65 @@ Instructions:
 
 ### Structured output prompt
 
-After the tool loop, the agent sends a final user message:
+После tool-loop агент добавляет:
 
 ```
 Now generate the final structured report in JSON using the exact schema provided. List every numeric value you used in the cited_numbers array.
 ```
 
-The JSON schema enforces six string fields and a `cited_numbers` array of numbers. `strict: true` prevents the model from adding extra fields.
+JSON-schema с `strict: true` и шестью обязательными строковыми полями + `cited_numbers: number[]`.
 
 ## 5. Guardrails
 
-1. **LLM does not produce numbers freely.** All figures come from tools or pre-computed metrics. Structured output enforces a `cited_numbers` field that is programmatically verified.
-2. **Validation gate.** Hard invariant failures block the normal narrative. The report is prefixed with a data-quality warning and CLI exits non-zero.
-3. **Deterministic core.** Fixed seed, identical artifacts on every run. Covered by `test_determinism`.
-4. **Temperature = 0.** Stabilizes reasoning and reduces hallucination variance.
-5. **Pydantic row schemas.** Type-safe boundaries between generation, metrics, and validation.
-6. **Post-check of cited numbers.** Every value in `cited_numbers` is compared against `metrics.csv` and raw data. Mismatches block the report.
-7. **Tool-loop limit.** Max 8 iterations prevents runaway tool calling.
-8. **No external network calls except OpenAI API.** No data leaves the local environment.
-9. **Fallback `--no-llm`.** Full pipeline works and is testable without any API key.
+1. **LLM не производит числа.** Все цифры — из tools/метрик. Structured output требует `cited_numbers`, который сверяется программно.
+2. **Валидационный гейт.** Провал hard-инвариантов блокирует нормальный нарратив. CLI завершается с кодом 2.
+3. **Детерминизм ядра.** Фиксированный seed, идентичные артефакты. Покрыто тестом `test_determinism`.
+4. **Temperature = 0.** Стабилизирует рассуждения LLM.
+5. **Pydantic row schemas.** Типобезопасность на границах generation/metrics/validation.
+6. **Guardrail на числа.** `verify_report_numbers` извлекает все числа из текста отчёта (не только self-reported `cited_numbers`) и сверяет с `metrics.csv`. Несовпадение → отчёт блокируется.
+7. **Лимит tool-loop.** Max 8 итераций — защита от runaway.
+8. **Сеть только к OpenAI API.** Больше внешних вызовов нет.
+9. **Fallback `--no-llm`.** Решение работает и проверяется без ключа.
 
-## 6. Why this approach
+## 6. Почему такой подход
 
-The task explicitly asks for simplicity as a signal of maturity. A single agent with four tools is enough because the problem is well-defined: data -> metrics -> validation -> narrative. Splitting this into multiple agents adds coordination overhead without value.
+Задание явно просит простоту как сигнал зрелости. Один агент с четырьмя tools — достаточно, потому что проблема чётко определена: данные → метрики → валидация → нарратив. Разбиение на мульти-агентную систему добавило бы coordination overhead без ценности.
 
-LLMs excel at language and interpretation, not at precise arithmetic on structured tables. By locking all calculations into tested Python functions, we get:
+LLM хорош в языке и интерпретации, плох в точной арифметике на структурированных таблицах. Закрыв все расчёты в протестированных Python-функциях, мы получаем:
 
-- Reproducibility (same seed, same CSV).
-- Verifiability (pytest covers metrics and validation).
-- Cost control (no LLM tokens spent on math; single main call per report).
-- Auditability (every number traces back to a pandas groupby).
+- Воспроизводимость (один seed → один CSV).
+- Верифицируемость (pytest покрывает метрики и валидацию).
+- Контроль стоимости (нет LLM-токенов на математику; один основной вызов на отчёт).
+- Аудируемость (каждая цифра трассируется к pandas groupby).
 
-The LLM adds value only where it is genuinely better: turning a table into a coherent business story with causal framing, provided the guardrails keep it honest.
+LLM добавляет ценность только там, где он действительно полезен: превращает таблицу в связный бизнес-рассказ с causal framing'ом — при условии, что guardrails не дают ему врать.
 
 ## Hard invariants vs soft anomalies
 
-**Hard invariants** are mathematical truths that must hold for the data to be internally consistent. If `active_users` increases month-over-month, or `amount_paid` differs from `monthly_price` for a paid row, the dataset is broken. These are not statistical quirks; they are logic errors. The pipeline treats them as blockers.
+**Hard invariants** — математические истины, которые должны выполняться для внутренней согласованности данных. Если `active_users` растёт месяц к месяцу, или `amount_paid` отличается от `monthly_price` для paid-строки — данные сломаны. Это не статистические странности, а логические ошибки. Пайплайн трактует их как блокеры.
 
-**Soft anomalies** are statistically unusual but valid patterns. A 25% MoM revenue drop, a churn rate double the median, or a failed-payment share of 22% are all real events that can happen in production. They flag opportunities for investigation, not bugs in the data. The report uses them as narrative anchors — the month 8 payment spike and the month 9 churn rebound — but they never prevent the pipeline from completing.
+**Soft anomalies** — статистически необычные, но валидные паттерны. Падение выручки на 25% MoM, churn rate вдвое выше медианы, или failed-payment share 22% — всё это реальные события. Они маркируют возможности для расследования, не баги. Отчёт использует их как narrative anchors (сбой платежей в месяце 8 и всплеск churn в месяце 9), но они никогда не блокируют пайплайн.
 
-Keeping the two levels separate shows that the system understands the difference between "the data is wrong" and "the data is telling us something important."
+Разделение этих уровней показывает, что система понимает разницу между «данные сломаны» и «данные говорят что-то важное».
 
-## Money in cents
+## Деньги в центах
 
-All monetary values inside the pipeline are integers representing whole cents. `Basic = 999`, `Pro = 1999`, `Premium = 3999`. `amount_paid` is either the plan price in cents or `0`. Revenue is summed as `int` and reconciled with exact equality — no epsilon tolerance.
+Все монетарные значения внутри пайплайна — целые числа, центы. `Basic = 999`, `Pro = 1999`, `Premium = 3999`. `amount_paid` либо равен price, либо 0. Revenue суммируется как `int`, реконсиляция — точная, без epsilon-допуска.
 
-Dollar formatting happens only at the CSV and report boundaries (`/ 100.0` with 2 decimal places). This eliminates the classic fintech bug where `0.1 + 0.2 != 0.3` breaks a reconciliation check.
+Долларовое форматирование происходит только на границе вывода (CSV, отчёт): `/ 100.0` с двумя знаками. Это убирает классический финтех-баг, где `0.1 + 0.2 != 0.3` ломает реконсиляцию.
 
-## Trade-offs and scope boundaries
+## Trade-offs и границы скоупа
 
-**What was deliberately not built:**
+**Что сознательно не построено:**
 
-- **Multi-agent system.** The task asks for one agent, not a swarm. Adding planner, executor, and critic agents would be over-engineering for a 12 000-row dataset.
-- **Database or queue.** pandas in memory is sufficient. PostgreSQL or Redis would add operational complexity with no benefit at this scale.
-- **Docker as mandatory.** A `Dockerfile` is nice for portability, but `uv` + `pyproject.toml` already guarantees reproducible dependencies. Docker is noted as optional.
-- **CI pipeline.** Not required for a CLI tool that is run on demand.
-- **Frontend or dashboard.** Out of scope. Output is CSV and markdown.
+- **Мульти-агентность.** Задача просит одного агента, не рой. Добавление planner / executor / critic агентов — over-engineering для 12000 строк.
+- **База данных или очередь.** pandas в памяти достаточно. PostgreSQL или Redis добавили бы операционную сложность без выгоды на этом масштабе.
+- **Docker как обязательный.** `uv` + `pyproject.toml` уже гарантирует воспроизводимые зависимости. Docker — опционально.
+- **CI pipeline.** Не требуется для CLI-утилиты, запускаемой по требованию.
+- **Фронтенд или дашборд.** Вне скоупа. Выход — CSV и markdown.
 
-**What would come next at scale:**
+**Что было бы следующим при масштабировании:**
 
-- Batch reporting: loop over multiple cohorts, reuse the same deterministic core.
-- Prompt caching: the system prompt and schema are static; OpenAI prompt caching reduces cost.
-- Plan-segmented hazard: in real data, churn hazard varies by plan. This would split `logo_churn_rate` and `revenue_churn` visibly.
+- Batch reporting: цикл по нескольким когортам, переиспользование того же детерминированного ядра.
+- Кэширование промптов: system prompt и schema статичны; prompt caching OpenAI снижает стоимость.
+- Сегментация hazard по планам: на реальных данных дорогие планы могут уходить чаще. Это разведёт `logo_churn_rate` и `revenue_churn` — и тогда сегментация по планам станет обязательной.

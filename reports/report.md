@@ -1,10 +1,11 @@
 # Churn & Revenue Report
 
 ## Executive summary
-The cohort of 1000 users generated $120473.96 in total revenue over 12 months. Revenue declined from $15470.27 in month 1 to $6865.72 in month 12. The sharpest revenue drop occurred in month 8 ($7085.48), driven by a payment failure anomaly that spilled into elevated churn in month 9. Early churn (months 2-3) consumed the largest share of the cohort. Cohort retention at month 12 is 0.4410 and NRR is 0.4438.
+The revenue trend shows a decline from month 1 to month 8, followed by a slight recovery in month 9. Churn rates have fluctuated, with a notable spike in month 9. The main finding indicates a correlation between the failed payment spike in month 8 and the increased churn in month 9.
 
 ## Monthly revenue trend
-Revenue started at $15470.27 in month 1 and trended downward as the cohort shrank. The sharpest single-month drop was from month 7 to month 8, losing $2338.49. After the anomaly, revenue partially recovered but never returned to pre-anomaly levels.
+Monthly revenue values are as follows: Month 1: 15470.27, Month 2: 13991.23, Month 3: 12541.99, Month 4: 11462.71, Month 5: 10953.07, Month 6: 10253.55, Month 7: 9423.97, Month 8: 7085.48 (drop point), Month 9: 7855.04, Month 10: 7525.29, Month 11: 7045.64, Month 12: 6865.72.
+
 
 | month | active_users | paid_users | churned_users | monthly_revenue | churn_rate | arpu |
 |-------|-------------|------------|---------------|-----------------|------------|------|
@@ -22,35 +23,13 @@ Revenue started at $15470.27 in month 1 and trended downward as the cohort shran
 | 12 | 441 | 428 | 14 | 6865.72 | 0.0308 | 15.57 |
 
 ## Churn trend
-Month 1 churn rate is N/A because there is no preceding month. The highest churn rate was in month 9 (0.1237), while the lowest rate after month 1 was in month 12 (0.0308). Months 2 and 3 show elevated rates consistent with an onboarding cliff.
+Churn rates by month are as follows: Month 1: N/A, Month 2: 0.0900, Month 3: 0.0989, Month 4: 0.0780, Month 5: 0.0701, Month 6: 0.0541, Month 7: 0.0692, Month 8: 0.0598, Month 9: 0.1237, Month 10: 0.0647, Month 11: 0.0461, Month 12: 0.0308.
 
 ## ARPU trend
-ARPU began at $15.47 and dipped to $12.17 in month 8, the same month as the payment failure spike. ARPU is calculated on the full active base, including grace-period users, so a surge in failed payments directly depresses the metric even when the active count is stable.
+ARPU values show a slight decline over the months, with a notable dip in month 8 to 12.17, likely due to the drop in paid users. The ARPU recovered slightly in month 9 to 15.40.
 
 ## Data quality checks
-Hard invariants checked:
-- PASS: schema_complete — All expected columns present
-- PASS: no_nulls — No nulls in required columns
-- PASS: row_count — Row count OK (12000)
-- PASS: monthly_price_positive — All prices positive
-- PASS: amount_paid_consistency — amount_paid consistent
-- PASS: payment_status_values — All statuses valid
-- PASS: revenue_reconciliation — Revenue reconciles with raw data
-- PASS: paid_le_active — paid_users <= active_users OK
-- PASS: churn_rate_bounds — churn_rate within bounds
-- PASS: active_monotonic — active_users monotonically non-increasing
-- PASS: churn_closure — Churn closure OK
-- PASS: churned_consistency — churned_users consistent with active delta
-
-Soft anomalies detected:
-- WARNING: revenue_drop (month 8) — Revenue dropped 24.8% MoM
-- WARNING: failed_spike (month 8) — Failed payment share 22.3% in month 8
+All validation invariants passed: schema_complete, no_nulls, row_count, monthly_price_positive, amount_paid_consistency, payment_status_values, revenue_reconciliation, paid_le_active, churn_rate_bounds, active_monotonic, churn_closure, churned_consistency.
 
 ## Business interpretation
-Revenue declined steadily because the closed cohort shrinks each month through churn. The payment anomaly in month 8 cost approximately $2338.49 in immediate MRR and triggered 72 churned users in month 9 versus 37 in month 8. This confirms that failed payments are not just a revenue timing issue—they directly accelerate attrition.
-
-Key takeaways:
-1. Early churn (months 2-3) removes a large fraction of the cohort. Target onboarding improvements in the first 60 days. Month 2 churn alone was 0.0900, month 3 was 0.0989.
-2. The month 8 payment failure spike cost $2338.49 in MRR and pushed 72 users into churn in month 9. Implement retry and dunning flows to catch failed payments before they convert to involuntary churn.
-3. ARPU compression in month 8 shows that failed payments hurt the metric even when user counts look stable. Monitor failed-payment share as a leading indicator of both revenue and churn risk.
-4. Logo churn and revenue churn coincide in this model because the hazard rate does not depend on plan. On real data, if expensive plans churn faster, revenue churn would exceed logo churn—worth segmenting by plan.
+Revenue decreased significantly in month 8, with a drop of 24.8%. The churn rate peaked in month 9 at 0.1237, likely due to the failed payment spike of 22.3% in month 8. Actionable takeaways include investigating the revenue drop in month 8, addressing the high failed payment rate, and focusing on retention strategies in month 9.

@@ -1,5 +1,6 @@
 """CLI entry point with typer."""
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from churn_agent.config import (
     DEFAULT_N_MONTHS,
     DEFAULT_N_USERS,
     DEFAULT_SEED,
+    GEN_META_JSON,
     METRICS_CSV,
     OPENAI_API_KEY,
     OPENAI_MODEL,
@@ -54,6 +56,19 @@ def _print_validation(result: ValidationResult) -> None:
             console.print(f"  {a.severity.upper()}: {a.name} (month {a.month}) — {a.detail}")
 
 
+def _read_gen_meta() -> dict:
+    if Path(GEN_META_JSON).exists():
+        with open(GEN_META_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "seed": DEFAULT_SEED,
+        "n_users": DEFAULT_N_USERS,
+        "n_months": DEFAULT_N_MONTHS,
+        "inject_anomaly": True,
+        "anomaly_month": DEFAULT_ANOMALY_MONTH,
+    }
+
+
 @app.command()
 def generate(
     n_users: int = typer.Option(DEFAULT_N_USERS, help="Number of users"),
@@ -64,7 +79,6 @@ def generate(
     output: str = typer.Option(USERS_CSV, help="Output CSV path"),
 ) -> None:
     """Generate synthetic user data."""
-
     df = generate_data(
         n_users=n_users,
         n_months=n_months,
@@ -77,7 +91,6 @@ def generate(
         f"[green]Generated {len(df)} rows ({n_users} users x {n_months} months) "
         f"with seed={seed}, anomaly={anomaly}.[/green]"
     )
-    return df
 
 
 @app.command()
@@ -95,7 +108,6 @@ def report(
         console.print(f"[red]Input file not found: {input_path}. Run 'generate' first.[/red]")
         raise typer.Exit(code=1)
 
-    # Read raw data as cents for exact computation
     raw_df = pd.read_csv(input_path)
     raw_df["monthly_price"] = (raw_df["monthly_price"] * 100).round().astype(int)
     raw_df["amount_paid"] = (raw_df["amount_paid"] * 100).round().astype(int)
@@ -107,7 +119,6 @@ def report(
     _print_validation(val_result)
 
     if not val_result.passed:
-        # Fail-closed: write warning report, exit non-zero
         warning_report = {
             "data_quality_warning": True,
             "executive_summary": "Data quality checks failed. Metrics are not trustworthy.",
@@ -129,14 +140,14 @@ def report(
 
     system_fingerprint = None
     if no_llm:
-        report_json = build_no_llm_report(metrics_table, val_result)
+        report_json = build_no_llm_report(metrics_df, val_result)
         console.print("[blue]Report generated in deterministic mode (--no-llm)[/blue]")
     else:
         if not OPENAI_API_KEY:
             console.print("[red]OPENAI_API_KEY not set. Use --no-llm or set the key.[/red]")
             raise typer.Exit(code=1)
 
-        from churn_agent.agent import run_agent, verify_cited_numbers
+        from churn_agent.agent import run_agent, verify_report_numbers
 
         report_json, system_fingerprint = run_agent(
             metrics_table=metrics_table,
@@ -144,26 +155,26 @@ def report(
             anomalies=val_result.anomalies,
             model=model,
         )
-        cited = report_json.get("cited_numbers", [])
-        issues = verify_cited_numbers(cited, metrics_path, input_path)
+        issues = verify_report_numbers(report_json, metrics_path, input_path)
         if issues:
-            console.print("[red]Guardrail: cited number mismatches found:[/red]")
+            console.print("[red]Guardrail: number mismatches found:[/red]")
             for issue in issues:
                 console.print(f"  - {issue}")
             raise typer.Exit(code=3)
-        console.print("[green]Guardrail: all cited numbers match metrics[/green]")
+        console.print("[green]Guardrail: all numbers in report match metrics[/green]")
 
     md = render_report_md(report_json, metrics_table)
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
     Path(report_path).write_text(md, encoding="utf-8")
     console.print(f"[green]Report written to {report_path}[/green]")
 
+    meta = _read_gen_meta()
     write_manifest(
-        seed=DEFAULT_SEED,
-        n_users=DEFAULT_N_USERS,
-        n_months=DEFAULT_N_MONTHS,
-        inject_anomaly=True,
-        anomaly_month=DEFAULT_ANOMALY_MONTH,
+        seed=meta["seed"],
+        n_users=meta["n_users"],
+        n_months=meta["n_months"],
+        inject_anomaly=meta["inject_anomaly"],
+        anomaly_month=meta["anomaly_month"],
         model=model,
         system_fingerprint=system_fingerprint,
         passed=val_result.passed,
@@ -224,14 +235,14 @@ def run(
 
     system_fingerprint = None
     if no_llm:
-        report_json = build_no_llm_report(metrics_table, val_result)
+        report_json = build_no_llm_report(metrics_df, val_result)
         console.print("[blue]Report generated in deterministic mode (--no-llm)[/blue]")
     else:
         if not OPENAI_API_KEY:
             console.print("[red]OPENAI_API_KEY not set. Use --no-llm or set the key.[/red]")
             raise typer.Exit(code=1)
 
-        from churn_agent.agent import run_agent, verify_cited_numbers
+        from churn_agent.agent import run_agent, verify_report_numbers
 
         report_json, system_fingerprint = run_agent(
             metrics_table=metrics_table,
@@ -239,14 +250,13 @@ def run(
             anomalies=val_result.anomalies,
             model=model,
         )
-        cited = report_json.get("cited_numbers", [])
-        issues = verify_cited_numbers(cited, METRICS_CSV, USERS_CSV)
+        issues = verify_report_numbers(report_json, METRICS_CSV, USERS_CSV)
         if issues:
-            console.print("[red]Guardrail: cited number mismatches found:[/red]")
+            console.print("[red]Guardrail: number mismatches found:[/red]")
             for issue in issues:
                 console.print(f"  - {issue}")
             raise typer.Exit(code=3)
-        console.print("[green]Guardrail: all cited numbers match metrics[/green]")
+        console.print("[green]Guardrail: all numbers in report match metrics[/green]")
 
     md = render_report_md(report_json, metrics_table)
     Path(output).parent.mkdir(parents=True, exist_ok=True)

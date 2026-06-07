@@ -2,6 +2,10 @@
 
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 DEFAULT_SEED = 42
 DEFAULT_N_USERS = 1000
 DEFAULT_N_MONTHS = 12
@@ -41,3 +45,4 @@ USERS_CSV = f"{DATA_DIR}/users.csv"
 METRICS_CSV = f"{REPORTS_DIR}/metrics.csv"
 REPORT_MD = f"{REPORTS_DIR}/report.md"
 MANIFEST_JSON = f"{REPORTS_DIR}/run_manifest.json"
+GEN_META_JSON = f"{DATA_DIR}/.generation_meta.json"

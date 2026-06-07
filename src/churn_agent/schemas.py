@@ -40,7 +40,7 @@ class MetricRow(BaseModel):
     mrr: int = Field(..., ge=0)
     cohort_retention: float = Field(..., ge=0, le=1)
     logo_churn_rate: float = Field(..., ge=0, le=1)
-    revenue_churn: float = Field(..., ge=0, le=1)
+    revenue_churn: float = Field(..., ge=-1, le=1)
     nrr: float = Field(..., ge=0)
 
     @field_validator("paid_users")
